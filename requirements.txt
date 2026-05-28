@@ -1,0 +1,6 @@
+requests
+PyGithub
+pandas
+numpy
+python-dotenv
+tqdm
