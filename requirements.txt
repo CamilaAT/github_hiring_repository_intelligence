@@ -4,3 +4,9 @@ pandas
 numpy
 python-dotenv
 tqdm
+openai
+transformers
+torch
+scikit-learn
+datasets
+accelerate
