@@ -59,23 +59,36 @@ def plot_label_distribution(
     """Conteo de repos por categoría — muestra el desbalance de clases."""
     labeled = load_labeled() if labeled is None else labeled
     counts = labeled["label"].value_counts().reindex(LABEL_ORDER, fill_value=0)
+    total = int(counts.sum())
 
-    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig, ax = plt.subplots(figsize=(9.5, 5))
     bars = ax.bar(
         counts.index,
         counts.values,
         color=[LABEL_COLORS[l] for l in counts.index],
         edgecolor="black",
-        linewidth=0.5,
+        linewidth=0.6,
     )
+    max_v = max(counts.values)
     for bar, v in zip(bars, counts.values):
-        ax.text(bar.get_x() + bar.get_width() / 2, v + 3, str(int(v)),
-                ha="center", va="bottom", fontsize=10)
+        pct = v / total * 100
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            v + max_v * 0.025,
+            f"{int(v)}\n({pct:.1f}%)",
+            ha="center", va="bottom", fontsize=10, linespacing=0.95,
+        )
 
-    ax.set_title("Distribución de categorías en el dataset (n=480)", fontsize=13)
+    ax.set_title(
+        f"Distribución de categorías en el dataset (n={total})\n"
+        "Tres clases dominan; tres son casi inexistentes",
+        fontsize=12.5,
+    )
     ax.set_ylabel("Cantidad de repositorios")
-    ax.set_xlabel("Categoría asignada por DeepSeek")
-    ax.set_ylim(0, max(counts.values) * 1.15)
+    ax.set_xlabel("Categoría asignada por DeepSeek (de menor a mayor madurez)")
+    ax.set_ylim(0, max_v * 1.22)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
     fig.tight_layout()
     _save(fig, save_as)
     return fig
@@ -104,20 +117,43 @@ def plot_signals_by_label(
 
     norm = (agg - agg.mean()) / agg.std(ddof=0).replace(0, 1)
 
-    fig, ax = plt.subplots(figsize=(10, 4.5))
+    # Formato compacto para la anotación: 1 decimal para valores < 100, entero
+    # con coma para mayores. Evita que cifras largas (p.ej. stars promedio)
+    # invadan celdas vecinas y compriman las filas template / low_value.
+    def _fmt(x: float) -> str:
+        if pd.isna(x):
+            return ""
+        if abs(x) >= 1000:
+            return f"{x:,.0f}"
+        if abs(x) >= 100:
+            return f"{x:.0f}"
+        if abs(x) >= 10:
+            return f"{x:.1f}"
+        return f"{x:.2f}"
+
+    annot = agg.map(_fmt)
+
+    # Figura más alta para que las 6 filas (incluidas template y low_value)
+    # tengan espacio vertical suficiente y los ticks no se traslapen.
+    fig, ax = plt.subplots(figsize=(13, 6.2))
     sns.heatmap(
-        norm, annot=agg.round(1), fmt="", cmap="RdBu_r", center=0,
-        cbar_kws={"label": "z-score por columna"},
-        linewidths=0.5, linecolor="white", ax=ax,
+        norm, annot=annot, fmt="", cmap="RdBu_r", center=0,
+        cbar_kws={"label": "z-score por columna (rojo = sobre el promedio)"},
+        linewidths=0.6, linecolor="white", ax=ax,
+        annot_kws={"size": 9},
     )
     ax.set_title(
-        "Señales promedio por categoría (anotación = valor real; color = z-score)",
-        fontsize=12,
+        "Q1 — Media de cada señal por categoría\n"
+        "Color = z-score por columna (rojo = arriba del promedio del dataset). "
+        "Número dentro de cada celda = valor real (no normalizado).",
+        fontsize=12, pad=12,
     )
-    ax.set_xlabel("Señal de GitHub")
-    ax.set_ylabel("Categoría")
-    plt.setp(ax.get_xticklabels(), rotation=35, ha="right")
-    fig.tight_layout()
+    ax.set_xlabel("Señal de GitHub", fontsize=11)
+    ax.set_ylabel("Categoría", fontsize=11)
+    plt.setp(ax.get_xticklabels(), rotation=35, ha="right", fontsize=10)
+    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=11)
+    # Margen extra abajo/izquierda para que ningún tick quede recortado
+    fig.subplots_adjust(left=0.12, bottom=0.20, top=0.88, right=0.98)
     _save(fig, save_as)
     return fig
 
@@ -131,40 +167,81 @@ def plot_low_value_vs_real(
     save_as: str | None = None,
 ) -> plt.Figure:
     """
-    Compara las señales de complejidad real (contributors, merged_prs, readme,
-    CI/CD) entre los repos catalogados como `template`/`low_value` y el resto.
+    Q2 — ¿Cómo distinguir un repo template/low_value de uno con ingeniería real?
+
+    Para responderlo, mostramos qué porcentaje de repos en cada cubeta cumple
+    con cada práctica de ingeniería (binaria). La separación se ve "a ojo": las
+    prácticas que tienen mucha mayor adopción en el bucket de ingeniería real
+    son las que mejor discriminan.
     """
     labeled = load_labeled() if labeled is None else labeled
     df = labeled.copy()
-    df["bucket"] = np.where(
-        df["label"].isin(["template", "low_value"]),
-        "template / low_value",
-        "intern / junior / senior / lead",
-    )
-    features = [
-        ("contributors", "Contribuidores"),
-        ("merged_prs", "PRs merged"),
-        ("readme_length", "README (chars)"),
-        ("has_cicd", "Tiene CI/CD (0/1)"),
-    ]
+    is_template = df["label"].isin(["template", "low_value"])
+    n_tpl = int(is_template.sum())
+    n_eng = int((~is_template).sum())
 
-    fig, axes = plt.subplots(1, 4, figsize=(15, 4))
-    palette = {"template / low_value": "#bdbdbd",
-               "intern / junior / senior / lead": "#2171b5"}
-    for ax, (col, title) in zip(axes, features):
-        sns.boxplot(data=df, x="bucket", y=col, hue="bucket",
-                    palette=palette, legend=False, ax=ax)
-        ax.set_title(title, fontsize=11)
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-        if col in {"merged_prs", "readme_length"}:
-            ax.set_yscale("symlog")
-        plt.setp(ax.get_xticklabels(), rotation=15, ha="right", fontsize=9)
+    label_eng = f"intern / junior / senior / lead  (n={n_eng})"
+    label_tpl = f"template / low_value  (n={n_tpl})"
+    df["bucket"] = np.where(is_template, label_tpl, label_eng)
 
-    fig.suptitle(
-        "¿Qué distingue a un repo template / low_value de uno con ingeniería real?",
-        fontsize=13, y=1.02,
+    # Cada práctica es una condición binaria sobre las señales del repo
+    practices = {
+        "Multi-contribuidor (≥ 2)": df["contributors"] >= 2,
+        "Tiene PRs merged (> 0)": df["merged_prs"] > 0,
+        "CI/CD configurado": df["has_cicd"] == 1,
+        "README detallado (> 500 chars)": df["readme_length"] > 500,
+        "Licencia open source": df["has_license"] == 1,
+        "Tiene releases (> 0)": df["releases"] > 0,
+        "Topics etiquetados (> 0)": df["topics_count"] > 0,
+        "Tiene descripción": df["has_description"] == 1,
+    }
+
+    rows = []
+    for name, mask in practices.items():
+        for bucket_name in [label_eng, label_tpl]:
+            in_bucket = df["bucket"] == bucket_name
+            pct = (mask & in_bucket).sum() / max(in_bucket.sum(), 1) * 100
+            rows.append({"practice": name, "bucket": bucket_name, "pct": pct})
+    out = pd.DataFrame(rows)
+
+    # Ordenamos las prácticas por brecha (engineering − template) descendente:
+    # arriba quedan las que más discriminan
+    pivot = out.pivot(index="practice", columns="bucket", values="pct")
+    pivot["gap"] = pivot[label_eng] - pivot[label_tpl]
+    order = pivot.sort_values("gap", ascending=True).index.tolist()  # ascending → top mayor brecha
+
+    eng_vals = pivot.loc[order, label_eng].values
+    tpl_vals = pivot.loc[order, label_tpl].values
+
+    y = np.arange(len(order))
+    height = 0.38
+
+    fig, ax = plt.subplots(figsize=(11.5, 6))
+    b1 = ax.barh(y + height / 2, eng_vals, height,
+                 color="#2171b5", edgecolor="black", linewidth=0.5,
+                 label=label_eng)
+    b2 = ax.barh(y - height / 2, tpl_vals, height,
+                 color="#bdbdbd", edgecolor="black", linewidth=0.5,
+                 label=label_tpl)
+    for bar, v in zip(b1, eng_vals):
+        ax.text(v + 1.2, bar.get_y() + bar.get_height() / 2,
+                f"{v:.0f}%", va="center", fontsize=9, color="#08306b")
+    for bar, v in zip(b2, tpl_vals):
+        ax.text(v + 1.2, bar.get_y() + bar.get_height() / 2,
+                f"{v:.0f}%", va="center", fontsize=9, color="#525252")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(order, fontsize=10)
+    ax.set_xlim(0, 110)
+    ax.set_xlabel("% de repos en la cubeta que cumplen con la práctica", fontsize=11)
+    ax.set_title(
+        "Q2 — Prácticas de ingeniería: ¿qué tan presentes están en cada cubeta?\n"
+        "Las prácticas están ordenadas de menor a mayor brecha (las de arriba son las que mejor discriminan).",
+        fontsize=12, pad=10,
     )
+    ax.legend(loc="lower right", fontsize=10, framealpha=0.95)
+    ax.set_axisbelow(True)
+    ax.grid(axis="x", alpha=0.3, linestyle="--")
     fig.tight_layout()
     _save(fig, save_as)
     return fig
