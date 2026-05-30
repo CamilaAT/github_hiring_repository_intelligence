@@ -1,0 +1,10 @@
+﻿metric,scope,bert,baseline_lr
+accuracy,global,0.6806,0.6944
+f1,macro avg,0.2928,0.3637
+f1,weighted avg,0.5908,0.7222
+f1,intern,0.0,0.0
+f1,junior,0.7843,0.6857
+f1,lead,0.806,0.8814
+f1,low_value,0.0,0.0
+f1,senior,0.1667,0.6154
+f1,template,0.0,0.0
